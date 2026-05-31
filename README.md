@@ -20,7 +20,7 @@
 
 # \- `Cargo.toml`
 
-# \- `src/main.rs`
+# \- all files inside `src/`
 
 # 
 
@@ -106,7 +106,7 @@
 
 # 
 
-# \- it only reads `Cargo.toml` and `src/main.rs`
+# \- it only reads `Cargo.toml` and files inside `src/`
 
 # \- it does not yet scan all files in the project
 
@@ -122,18 +122,17 @@
 
 # 
 
-# \- read all files inside `src/`
-
 # \- skip large or unnecessary files
 
 # \- improve prompt quality
 
 # \- add better error handling
 
-\- support more project types
+# \- support more project types
 
-## Vision
-===
+# 
+
+# \## Vision
 
 # 
 
