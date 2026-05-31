@@ -1,8 +1,17 @@
-use reqwest::blocking::Client;
-use serde_json::json;
-use std::env;
+use clap::Parser;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[derive(Parser, Debug)]
+struct Cli {
+    prompt: String,
+
+    #[arg(short, long)]
+    file: Vec<String>,
+
+    #[arg(long)]
+    scan_src: bool,
+}
 
 fn should_include_file(path: &Path) -> bool {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -26,60 +35,72 @@ fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().skip(1).collect();
+fn append_file_to_context(path: &Path, context: &mut String) {
+    let file_name = path.display().to_string();
 
-    if args.is_empty() {
-        eprintln!("Usage: cargo run -- \"your question\"");
-        std::process::exit(1);
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > 20_000 {
+            context.push_str(&format!(
+                "\n\n--- {} ---\nSkipped: file too large",
+                file_name
+            ));
+            return;
+        }
     }
 
-    let prompt = args.join(" ");
-    let mut project_files = String::new();
+    if let Ok(content) = fs::read_to_string(path) {
+        context.push_str(&format!("\n\n--- {} ---\n{}", file_name, content));
+    } else {
+        context.push_str(&format!(
+            "\n\n--- {} ---\nCould not read file",
+            file_name
+        ));
+    }
+}
 
-    let cargo_toml =
-        fs::read_to_string("Cargo.toml").unwrap_or_else(|_| "Could not read Cargo.toml".to_string());
-    project_files.push_str(&format!("--- Cargo.toml ---\n{}\n\n", cargo_toml));
+fn read_project_files(extra_files: &[String], scan_src: bool) -> String {
+    let mut context = String::new();
 
-    let readme =
-        fs::read_to_string("README.md").unwrap_or_else(|_| "Could not read README.md".to_string());
-    project_files.push_str(&format!("--- README.md ---\n{}\n\n", readme));
+    for file in ["Cargo.toml", "README.md", "src/main.rs"] {
+        append_file_to_context(Path::new(file), &mut context);
+    }
 
-    let mut src_files = Vec::new();
-    collect_files(Path::new("src"), &mut src_files);
+    if scan_src {
+        let mut src_files = Vec::new();
+        collect_files(Path::new("src"), &mut src_files);
 
-    for path in src_files {
-        let file_name = path.display().to_string();
-
-        if let Ok(meta) = fs::metadata(&path) {
-            if meta.len() > 20_000 {
-                project_files.push_str(&format!(
-                    "--- {} ---\nSkipped: file too large\n\n",
-                    file_name
-                ));
-                continue;
+        for path in src_files {
+            if path != PathBuf::from("src/main.rs") {
+                append_file_to_context(&path, &mut context);
             }
         }
-
-        let content =
-            fs::read_to_string(&path).unwrap_or_else(|_| format!("Could not read {}", file_name));
-
-        project_files.push_str(&format!("--- {} ---\n{}\n\n", file_name, content));
     }
 
+    for file in extra_files {
+        append_file_to_context(Path::new(file), &mut context);
+    }
+
+    context
+}
+
+#[tokio::main]
+async fn main() {
+    let args = Cli::parse();
+    let api_key = std::env::var("GROQ_API_KEY").expect("GROQ_API_KEY not set");
+    let context = read_project_files(&args.file, args.scan_src);
+
     let full_prompt = format!(
-        "User question: {prompt}\n\nProject files:\n\n{project_files}"
+        "Here are the project files:\n{}\n\nQuestion: {}",
+        context, args.prompt
     );
 
-    let api_key = env::var("GROQ_API_KEY")?;
-    let client = Client::new();
-
-    let body = json!({
-        "model": "llama-3.1-8b-instant",
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "model": "llama-3.3-70b-versatile",
         "messages": [
             {
                 "role": "system",
-                "content": "You explain Rust projects clearly and briefly."
+                "content": "You are a Rust codebase assistant. Answer questions based on the provided files."
             },
             {
                 "role": "user",
@@ -88,16 +109,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ]
     });
 
-    let json_response: serde_json::Value = client
+    let res = client
         .post("https://api.groq.com/openai/v1/chat/completions")
-        .bearer_auth(api_key)
+        .header("Authorization", format!("Bearer {}", api_key))
         .json(&body)
-        .send()?
-        .json()?;
+        .send()
+        .await
+        .expect("Request failed");
 
-    let answer = &json_response["choices"][0]["message"]["content"];
-
-    println!("{}", answer.as_str().unwrap_or("No response text found"));
-
-    Ok(())
+    let json: serde_json::Value = res.json().await.expect("Bad JSON");
+    let answer = &json["choices"][0]["message"]["content"];
+    println!("{}", answer);
 }
