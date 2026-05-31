@@ -13,13 +13,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let prompt = args.join(" ");
 
+    let mut project_files = String::new();
+
     let cargo_toml =
         fs::read_to_string("Cargo.toml").unwrap_or_else(|_| "Could not read Cargo.toml".to_string());
-    let main_rs =
-        fs::read_to_string("src/main.rs").unwrap_or_else(|_| "Could not read src/main.rs".to_string());
+    project_files.push_str(&format!("--- Cargo.toml ---\n{}\n\n", cargo_toml));
+
+    if let Ok(entries) = fs::read_dir("src") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+
+            if path.is_file() {
+                let file_name = path.display().to_string();
+                let content = fs::read_to_string(&path)
+                    .unwrap_or_else(|_| format!("Could not read {}", file_name));
+
+                project_files.push_str(&format!("--- {} ---\n{}\n\n", file_name, content));
+            }
+        }
+    }
 
     let full_prompt = format!(
-        "User question: {prompt}\n\nProject files:\n\n--- Cargo.toml ---\n{cargo_toml}\n\n--- src/main.rs ---\n{main_rs}"
+        "User question: {prompt}\n\nProject files:\n\n{project_files}"
     );
 
     let api_key = env::var("GROQ_API_KEY")?;
